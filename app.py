@@ -216,7 +216,7 @@ class MercuryAPIClient:
             TransactionResponse object containing transaction data
         """
         logger.info(f"Fetching transactions - Limit {limit}, Offset {offset}, Order {order}")
-        logger.debug(f"Filters - Account ID: {account_id}, Start Date: {start_date}, End Date: {end_date}")
+        logger.info(f"Date range - Start: {start_date}, End: {end_date}")
         
         if not account_id:
             logger.error("Account ID is required for fetching transactions")
@@ -230,12 +230,41 @@ class MercuryAPIClient:
         }
         
         if start_date:
-            params["start_date"] = start_date
+            # Use 'start' parameter as per Mercury API docs
+            params["start"] = start_date
+            logger.info(f"Added start parameter: {start_date}")
+                
         if end_date:
-            params["end_date"] = end_date
+            # Use 'end' parameter as per Mercury API docs
+            params["end"] = end_date
+            logger.info(f"Added end parameter: {end_date}")
             
+        # Log the complete request details
+        logger.info(f"Making request to URL: {url}")
+        logger.info(f"Request parameters: {json.dumps(params, indent=2)}")
+        
         response = self.make_request(url, params=params)
-        logger.info(f"Successfully retrieved transactions")
+        
+        # Log the first few transactions to check dates
+        transactions = response.get("transactions", [])
+        if transactions:
+            logger.info("Sample of transaction dates from response:")
+            for i, t in enumerate(transactions[:5]):
+                logger.info(f"Transaction {i+1} - Created: {t.get('createdAt')}, Posted: {t.get('postedAt')}")
+            
+            # Find min and max dates
+            created_dates = [t.get('createdAt') for t in transactions if t.get('createdAt')]
+            posted_dates = [t.get('postedAt') for t in transactions if t.get('postedAt')]
+            
+            if created_dates:
+                min_created = min(created_dates)
+                max_created = max(created_dates)
+                logger.info(f"Date range in response - Created dates: {min_created} to {max_created}")
+            
+            if posted_dates:
+                min_posted = min(posted_dates)
+                max_posted = max(posted_dates)
+                logger.info(f"Date range in response - Posted dates: {min_posted} to {max_posted}")
         
         # Convert response to TransactionResponse object
         transactions = []
@@ -243,7 +272,11 @@ class MercuryAPIClient:
             # Convert string dates to datetime objects
             for date_field in ["createdAt", "estimatedDeliveryDate", "failedAt", "postedAt"]:
                 if t.get(date_field):
-                    t[date_field] = datetime.fromisoformat(t[date_field].replace("Z", "+00:00"))
+                    try:
+                        t[date_field] = datetime.fromisoformat(t[date_field].replace("Z", "+00:00"))
+                        logger.debug(f"Converted {date_field}: {t[date_field]}")
+                    except Exception as e:
+                        logger.error(f"Error converting date {date_field}: {t[date_field]}. Error: {str(e)}")
             
             # Convert kind and status to enums
             if t.get("kind"):
@@ -293,6 +326,7 @@ class MercuryAPIClient:
         offset = 0
         limit = 500  # Maximum allowed by API
         has_more = True
+        oldest_date = None
         
         while has_more:
             logger.debug(f"Fetching transactions with offset {offset}")
@@ -304,13 +338,31 @@ class MercuryAPIClient:
                 offset=offset
             )
             
+            if not response.transactions:
+                break
+                
+            # Track the oldest date we've seen
+            for t in response.transactions:
+                if t.createdAt:
+                    if oldest_date is None or t.createdAt < oldest_date:
+                        oldest_date = t.createdAt
+            
             all_transactions.extend(response.transactions)
             
             # If we got fewer transactions than the limit, we've reached the end
             has_more = len(response.transactions) == limit
             offset += limit
             
+            # If we've reached our start_date, we can stop
+            if start_date and oldest_date:
+                start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                if oldest_date.date() < start_dt.date():
+                    logger.info(f"Reached transactions older than start_date {start_date}")
+                    break
+            
         logger.info(f"Successfully retrieved all {len(all_transactions)} transactions")
+        if oldest_date:
+            logger.info(f"Oldest transaction date: {oldest_date}")
         return all_transactions
     
     def make_request(self, url: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
@@ -437,7 +489,7 @@ def main():
             print(f"Selected account: {accounts[int(account_choice) - 1].get('name')}")
         
         # Ask for date range
-        default_start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+        default_start_date = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d")
         start_date = input(f"\nEnter start date (YYYY-MM-DD) or press Enter for default ({default_start_date}): ")
         if not start_date:
             start_date = default_start_date
